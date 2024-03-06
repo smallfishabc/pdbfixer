@@ -54,6 +54,8 @@ import sys
 import os
 import os.path
 import math
+from Bio.SeqUtils import seq3
+from Bio import SeqIO
 
 from pkg_resources import resource_filename
 
@@ -181,7 +183,7 @@ class PDBFixer(object):
     """PDBFixer implements many tools for fixing problems in PDB and PDBx/mmCIF files.
     """
 
-    def __init__(self, filename=None, pdbfile=None, pdbxfile=None, url=None, pdbid=None):
+    def __init__(self, filename=None, pdbfile=None, pdbxfile=None, url=None, pdbid=None, sequence=None, chain_id=None):
         """Create a new PDBFixer instance to fix problems in a PDB or PDBx/mmCIF file.
 
         Parameters
@@ -244,11 +246,11 @@ class PDBFixer(object):
             if _guessFileFormat(file, filename) == 'pdbx':
                 self._initializeFromPDBx(file)
             else:
-                self._initializeFromPDB(file)
+                self._initializeFromPDB(file,sequence,chain_id)
             file.close()
         elif pdbfile:
             # A file-like object has been specified.
-            self._initializeFromPDB(pdbfile)
+            self._initializeFromPDB(pdbfile,sequence,chain_id)
         elif pdbxfile:
             # A file-like object has been specified.
             self._initializeFromPDBx(pdbxfile)
@@ -278,14 +280,23 @@ class PDBFixer(object):
             name = next(templatePdb.topology.residues()).name
             self.templates[name] = templatePdb
 
-    def _initializeFromPDB(self, file):
+    def _initializeFromPDB(self, file, sequence, chain_id):
         """Initialize this object by reading a PDB file."""
-
         structure = PdbStructure(file)
         pdb = app.PDBFile(structure)
         self.topology = pdb.topology
         self.positions = pdb.positions
-        self.sequences = [Sequence(s.chain_id, s.residues) for s in structure.sequences]
+        if sequence:
+            for record in SeqIO.parse(sequence,"fasta"):
+                one_letter_seq=record.seq
+            if not chain_id:
+                raise ValueError('You must provide chain ID if you input a sequence')
+            converted_sequence=[seq3(single).upper() for single in one_letter_seq]
+            self.sequences = [Sequence(chain_id, converted_sequence)]
+            #for i in self.sequences:
+            #    print("The chain ID is {}, The sequence is {}".format(i.chainId,i.residues))
+        else:
+            self.sequences = [Sequence(s.chain_id, s.residues) for s in structure.sequences]
         self.modifiedResidues = [ModifiedResidue(r.chain_id, r.number, r.residue_name, r.standard_name) for r in structure.modified_residues]
 
     def _initializeFromPDBx(self, file):
@@ -631,13 +642,12 @@ class PDBFixer(object):
                         break
                 if chain in chainSequence:
                     break
-
         # Now build the list of residues to add.
-
         self.missingResidues = {}
         for chain in self.topology.chains():
             if chain in chainSequence:
                 offset = chainOffset[chain]
+
                 sequence = chainSequence[chain].residues
                 gappedSequence = chainWithGaps[chain]
                 index = 0
@@ -1247,6 +1257,8 @@ def main():
         parser.add_option('--negative-ion', default='Cl-', dest='negativeIon', choices=('Cl-', 'Br-', 'F-', 'I-'), metavar='ION', help='negative ion to include in the water box: Cl-, Br-, F-, or I- [default: Cl-]')
         parser.add_option('--ionic-strength', type='float', default=0.0, dest='ionic', metavar='STRENGTH', help='molar concentration of ions to add to the water box [default: 0.0]')
         parser.add_option('--verbose', default=False, action='store_true', dest='verbose', metavar='VERBOSE', help='Print verbose output')
+        parser.add_option('--sequence',default=None, dest='sequence',metavar='FILENAME', help='correct sequence in fasta format(if any residue is missing)')
+        parser.add_option('--chain_id',default=None, dest='chain_id',metavar='str')
         (options, args) = parser.parse_args()
         if (len(args) == 0) and (options.pdbid==None) and (options.url==None):
             parser.error('No filename specified')
@@ -1259,7 +1271,13 @@ def main():
             if options.verbose: print('Retrieving PDB from URL "' + options.url + '"...')
             fixer = PDBFixer(url=options.url)
         else:
-            fixer = PDBFixer(filename=sys.argv[1])
+            if options.sequence:
+                if options.chain_id:
+                    fixer = PDBFixer(filename=sys.argv[1],sequence=options.sequence,chain_id=options.chain_id)
+                else:
+                    raise ValueError("Chain ID must be provided with the sequence")           
+            else:
+                fixer = PDBFixer(filename=sys.argv[1])
         if options.residues:
             if options.verbose: print('Finding missing residues...')
             fixer.findMissingResidues()
